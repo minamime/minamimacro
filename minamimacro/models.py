@@ -26,6 +26,7 @@ class InputAction:
 class MacroSettings:
     cursor_speed: float = 1200.0
     cursor_speed_variation: float = 0.0
+    action_delay_variation_ms: float = 0.0
     variation_x: int = 0
     variation_y: int = 0
     loop_delay: float = 0.1
