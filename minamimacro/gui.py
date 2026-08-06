@@ -37,6 +37,8 @@ class MacroApp(tk.Tk):
 
         self._control_regions: list[tuple[int, int, int, int]] = []
         self._focused_text_input_active = False
+        self._queue_drag_index: int | None = None
+        self._queue_drag_active = False
 
         self.recorder = InputRecorder(should_record_event=self._should_record_event)
         self.engine = MacroEngine()
@@ -60,6 +62,7 @@ class MacroApp(tk.Tk):
         self.record_hotkey_var = tk.StringVar(value="<ctrl>+<alt>+r")
         self.cursor_speed_var = tk.StringVar(value="1200")
         self.cursor_speed_variation_var = tk.StringVar(value="0")
+        self.action_delay_variation_ms_var = tk.StringVar(value="0")
         self.variation_x_var = tk.StringVar(value="3")
         self.variation_y_var = tk.StringVar(value="4")
         self.loop_delay_var = tk.StringVar(value="0.10")
@@ -152,6 +155,9 @@ class MacroApp(tk.Tk):
         self.action_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         action_list_scrollbar.configure(command=self.action_list.yview)
         self.action_list.bind("<Delete>", self._delete_selected_actions)
+        self.action_list.bind("<ButtonPress-1>", self._on_queue_press)
+        self.action_list.bind("<B1-Motion>", self._on_queue_drag)
+        self.action_list.bind("<ButtonRelease-1>", self._on_queue_release)
 
         settings_frame = ttk.Frame(root)
         settings_frame.pack(fill=tk.X)
@@ -180,14 +186,17 @@ class MacroApp(tk.Tk):
         ttk.Label(right, text="Cursor speed variation (+/- px/s)").grid(row=1, column=0, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(right, textvariable=self.cursor_speed_variation_var).grid(row=1, column=1, sticky=tk.EW, padx=6, pady=4)
 
-        ttk.Label(right, text="Pixel variation X").grid(row=2, column=0, sticky=tk.W, padx=6, pady=4)
-        ttk.Entry(right, textvariable=self.variation_x_var).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=4)
+        ttk.Label(right, text="Action delay variation (+/- ms)").grid(row=2, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(right, textvariable=self.action_delay_variation_ms_var).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=4)
 
-        ttk.Label(right, text="Pixel variation Y").grid(row=3, column=0, sticky=tk.W, padx=6, pady=4)
-        ttk.Entry(right, textvariable=self.variation_y_var).grid(row=3, column=1, sticky=tk.EW, padx=6, pady=4)
+        ttk.Label(right, text="Pixel variation X").grid(row=3, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(right, textvariable=self.variation_x_var).grid(row=3, column=1, sticky=tk.EW, padx=6, pady=4)
 
-        ttk.Label(right, text="Loop delay (s)").grid(row=4, column=0, sticky=tk.W, padx=6, pady=4)
-        ttk.Entry(right, textvariable=self.loop_delay_var).grid(row=4, column=1, sticky=tk.EW, padx=6, pady=4)
+        ttk.Label(right, text="Pixel variation Y").grid(row=4, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(right, textvariable=self.variation_y_var).grid(row=4, column=1, sticky=tk.EW, padx=6, pady=4)
+
+        ttk.Label(right, text="Loop delay (s)").grid(row=5, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(right, textvariable=self.loop_delay_var).grid(row=5, column=1, sticky=tk.EW, padx=6, pady=4)
 
         right.grid_columnconfigure(1, weight=1)
 
@@ -612,9 +621,56 @@ class MacroApp(tk.Tk):
         for i, action in enumerate(self.recorder.actions, start=1):
             self.action_list.insert(
                 tk.END,
-                f"{i:03d} | {action.action_type.value:12s} | delay={action.delay:.3f}s | {action.payload}",
+                f"........ {i:03d} | {action.action_type.value:12s} | delay={action.delay:.3f}s | {action.payload}",
             )
         self.target_var.set(f"{self._queued_target_count()} queued pixel actions")
+
+    def _on_queue_press(self, event: tk.Event) -> str | None:
+        # Only begin drag-reorder when pointer is in the left "8 dots" handle area.
+        if int(getattr(event, "x", 0)) > 64:
+            self._queue_drag_index = None
+            self._queue_drag_active = False
+            return None
+
+        index = int(self.action_list.nearest(int(getattr(event, "y", 0))))
+        if index < 0 or index >= len(self.recorder.actions):
+            return None
+
+        self._queue_drag_index = index
+        self._queue_drag_active = True
+        self.action_list.selection_clear(0, tk.END)
+        self.action_list.selection_set(index)
+        self.action_list.activate(index)
+        return "break"
+
+    def _on_queue_drag(self, event: tk.Event) -> str | None:
+        if not self._queue_drag_active or self._queue_drag_index is None:
+            return None
+
+        target_index = int(self.action_list.nearest(int(getattr(event, "y", 0))))
+        if target_index < 0 or target_index >= len(self.recorder.actions):
+            return "break"
+
+        if target_index == self._queue_drag_index:
+            return "break"
+
+        action = self.recorder.actions.pop(self._queue_drag_index)
+        self.recorder.actions.insert(target_index, action)
+        self._queue_drag_index = target_index
+
+        self._refresh_action_list()
+        self.action_list.selection_clear(0, tk.END)
+        self.action_list.selection_set(target_index)
+        self.action_list.activate(target_index)
+        self.status_var.set(f"Moved action to position {target_index + 1}")
+        return "break"
+
+    def _on_queue_release(self, _event: tk.Event) -> str | None:
+        if not self._queue_drag_active:
+            return None
+        self._queue_drag_active = False
+        self._queue_drag_index = None
+        return "break"
 
     def _queued_target_count(self) -> int:
         return sum(1 for action in self.recorder.actions if action.action_type == ActionType.TARGET_CLICK)
@@ -728,15 +784,19 @@ class MacroApp(tk.Tk):
         try:
             speed = float(self.cursor_speed_var.get())
             speed_variation = max(0.0, float(self.cursor_speed_variation_var.get()))
+            action_delay_variation_ms = max(0.0, float(self.action_delay_variation_ms_var.get()))
             variation_x = max(0, int(self.variation_x_var.get()))
             variation_y = max(0, int(self.variation_y_var.get()))
             loop_delay = max(0.0, float(self.loop_delay_var.get()))
         except ValueError as exc:
-            raise ValueError("Enter valid numeric values for speed/speed variation/pixel variation/loop delay") from exc
+            raise ValueError(
+                "Enter valid numeric values for speed/speed variation/action delay variation/pixel variation/loop delay"
+            ) from exc
 
         return MacroSettings(
             cursor_speed=speed,
             cursor_speed_variation=speed_variation,
+            action_delay_variation_ms=action_delay_variation_ms,
             variation_x=variation_x,
             variation_y=variation_y,
             loop_delay=loop_delay,
@@ -762,6 +822,7 @@ class MacroApp(tk.Tk):
 
         self.cursor_speed_var.set(str(settings.cursor_speed))
         self.cursor_speed_variation_var.set(str(settings.cursor_speed_variation))
+        self.action_delay_variation_ms_var.set(str(settings.action_delay_variation_ms))
         self.variation_x_var.set(str(settings.variation_x))
         self.variation_y_var.set(str(settings.variation_y))
         self.loop_delay_var.set(str(settings.loop_delay))

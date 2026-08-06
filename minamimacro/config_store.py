@@ -45,6 +45,7 @@ def settings_to_dict(settings: MacroSettings) -> dict[str, Any]:
     return {
         "cursor_speed": settings.cursor_speed,
         "cursor_speed_variation": settings.cursor_speed_variation,
+        "action_delay_variation_ms": settings.action_delay_variation_ms,
         "variation_x": settings.variation_x,
         "variation_y": settings.variation_y,
         "loop_delay": settings.loop_delay,
@@ -55,6 +56,7 @@ def settings_from_dict(data: dict[str, Any]) -> MacroSettings:
     return MacroSettings(
         cursor_speed=float(data.get("cursor_speed", 1200.0)),
         cursor_speed_variation=max(0.0, float(data.get("cursor_speed_variation", 0.0))),
+        action_delay_variation_ms=max(0.0, float(data.get("action_delay_variation_ms", 0.0))),
         variation_x=max(0, int(data.get("variation_x", 0))),
         variation_y=max(0, int(data.get("variation_y", 0))),
         loop_delay=max(0.0, float(data.get("loop_delay", 0.1))),

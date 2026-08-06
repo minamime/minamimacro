@@ -66,8 +66,9 @@ class MacroEngine:
             for action in self._actions:
                 if not self._running.is_set():
                     return
-                if action.delay > 0:
-                    time.sleep(action.delay)
+                effective_delay = self._apply_delay_variation(action.delay)
+                if effective_delay > 0:
+                    time.sleep(effective_delay)
                 try:
                     self._execute_action(action)
                 except Exception as exc:
@@ -75,6 +76,14 @@ class MacroEngine:
 
             if self._settings.loop_delay > 0:
                 time.sleep(self._settings.loop_delay)
+
+    def _apply_delay_variation(self, base_delay_seconds: float) -> float:
+        variation_ms = max(0.0, self._settings.action_delay_variation_ms)
+        if variation_ms <= 0:
+            return max(0.0, base_delay_seconds)
+
+        jitter_seconds = random.uniform(-variation_ms, variation_ms) / 1000.0
+        return max(0.0, base_delay_seconds + jitter_seconds)
 
     def _move_mouse_smooth(self, x: int, y: int) -> None:
         base_speed = self._settings.cursor_speed
