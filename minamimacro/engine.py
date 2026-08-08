@@ -5,8 +5,10 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 
-from .color_detection import area_contains_any_target_color
+from .color_detection import find_first_target_color_match
 from pynput.mouse import Controller as MouseController
 
 from .input_utils import deserialize_button
@@ -14,22 +16,95 @@ from .keyboard_backend import AutoKeyboardBackend
 from .models import ActionType, InputAction, MacroSettings
 
 
+MODIFIER_KEYS = {
+    "special:Key.shift",
+    "special:Key.shift_l",
+    "special:Key.shift_r",
+    "special:Key.ctrl",
+    "special:Key.ctrl_l",
+    "special:Key.ctrl_r",
+    "special:Key.alt",
+    "special:Key.alt_l",
+    "special:Key.alt_r",
+    "special:Key.cmd",
+    "special:Key.cmd_l",
+    "special:Key.cmd_r",
+    "special:Key.super",
+}
+
+
 class MacroEngine:
     def __init__(self) -> None:
-        self._keyboard = AutoKeyboardBackend()
+        self._keyboard_mode = "auto"
+        self._keyboard = AutoKeyboardBackend(self._keyboard_mode)
         self._mouse = MouseController()
         self._actions: list[InputAction] = []
         self._settings = MacroSettings()
+        self._pressed_keys: set[str] = set()
         self._running = threading.Event()
         self._thread: threading.Thread | None = None
         self._status_callback: Callable[[str], None] | None = None
+        self._color_match_callback: Callable[[dict], None] | None = None
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         self._status_callback = callback
 
+    def set_color_match_callback(self, callback: Callable[[dict], None]) -> None:
+        self._color_match_callback = callback
+
     def update(self, actions: list[InputAction], settings: MacroSettings) -> None:
         self._actions = list(actions)
         self._settings = settings
+
+    @property
+    def keyboard_backend_name(self) -> str:
+        return self._keyboard.name
+
+    @property
+    def keyboard_backend_mode(self) -> str:
+        return self._keyboard_mode
+
+    def set_keyboard_backend(self, backend_mode: str) -> tuple[bool, str]:
+        mode = backend_mode.strip().lower()
+        if self._running.is_set():
+            return False, "Stop macro before changing keyboard backend"
+
+        old_backend = self._keyboard
+        old_mode = self._keyboard_mode
+        try:
+            self._keyboard = AutoKeyboardBackend(mode)
+            self._keyboard_mode = mode
+        except Exception as exc:
+            self._keyboard = old_backend
+            self._keyboard_mode = old_mode
+            return False, str(exc)
+
+        try:
+            old_backend.close()
+        except Exception:
+            pass
+
+        warning = self._keyboard.warning or ""
+        message = f"Keyboard backend set to {self._keyboard.name}"
+        if warning:
+            message += f" ({warning})"
+        return True, message
+
+    def test_type_text(self, text: str) -> tuple[bool, str]:
+        if not text:
+            return False, "Text is empty"
+
+        try:
+            for ch in text:
+                key_value = f"char:{ch}"
+                self._keyboard.press_serialized(key_value)
+                time.sleep(0.01)
+                self._keyboard.release_serialized(key_value)
+                time.sleep(0.01)
+        except Exception as exc:
+            return False, str(exc)
+
+        return True, "Typing test sent"
 
     @property
     def is_running(self) -> bool:
@@ -63,6 +138,7 @@ class MacroEngine:
 
     def _run_loop(self) -> None:
         while self._running.is_set():
+            self._release_all_pressed_keys()
             for action in self._actions:
                 if not self._running.is_set():
                     return
@@ -111,11 +187,19 @@ class MacroEngine:
 
     def _execute_action(self, action: InputAction) -> None:
         if action.action_type == ActionType.KEY_DOWN:
-            self._keyboard.press_serialized(str(action.payload["key"]))
+            key_value = str(action.payload["key"])
+            self._keyboard.press_serialized(key_value)
+            self._pressed_keys.add(key_value)
             return
 
         if action.action_type == ActionType.KEY_UP:
-            self._keyboard.release_serialized(str(action.payload["key"]))
+            key_value = str(action.payload["key"])
+            if key_value in self._pressed_keys:
+                self._keyboard.release_serialized(key_value)
+                self._pressed_keys.discard(key_value)
+            else:
+                # Some recordings may contain key_up without key_down.
+                self._tap_orphan_key(key_value)
             return
 
         if action.action_type == ActionType.MOUSE_CLICK:
@@ -164,6 +248,40 @@ class MacroEngine:
                 return
             time.sleep(min(0.05, remaining))
 
+    def _release_all_pressed_keys(self) -> None:
+        if not self._pressed_keys:
+            return
+        for key_value in list(self._pressed_keys):
+            try:
+                self._keyboard.release_serialized(key_value)
+            except Exception:
+                pass
+            self._pressed_keys.discard(key_value)
+
+    def _tap_orphan_key(self, key_value: str) -> None:
+        # Orphan key_up events are common on some Wayland setups.
+        # For character keys, release held modifiers to avoid turning text into dead shortcuts.
+        held_modifiers = [k for k in self._pressed_keys if k in MODIFIER_KEYS]
+        is_char_key = key_value.startswith("char:")
+
+        if is_char_key and held_modifiers:
+            for modifier in held_modifiers:
+                try:
+                    self._keyboard.release_serialized(modifier)
+                except Exception:
+                    pass
+
+        self._keyboard.press_serialized(key_value)
+        time.sleep(0.012)
+        self._keyboard.release_serialized(key_value)
+
+        if is_char_key and held_modifiers:
+            for modifier in held_modifiers:
+                try:
+                    self._keyboard.press_serialized(modifier)
+                except Exception:
+                    pass
+
     def _execute_color_trigger(self, action: InputAction) -> None:
         area_raw = action.payload.get("area", [])
         colors_raw = action.payload.get("colors", [])
@@ -186,12 +304,14 @@ class MacroEngine:
 
         while self._running.is_set():
             try:
-                matched = area_contains_any_target_color(area, target_colors, tolerance)
+                match = find_first_target_color_match(area, target_colors, tolerance)
             except Exception as exc:
                 self._set_status(f"Color trigger error: {exc}")
                 return
 
-            if matched:
+            if match is not None:
+                matched_rgb, matched_point = match
+                self._emit_color_trigger_match(action, matched_rgb, matched_point)
                 self._set_status("Color trigger matched")
                 return
 
@@ -201,5 +321,41 @@ class MacroEngine:
 
             time.sleep(poll_delay)
 
+    def _emit_color_trigger_match(
+        self,
+        action: InputAction,
+        matched_rgb: tuple[int, int, int],
+        matched_point: tuple[int, int],
+    ) -> None:
+        payload = {
+            "rgb": [int(matched_rgb[0]), int(matched_rgb[1]), int(matched_rgb[2])],
+            "point": [int(matched_point[0]), int(matched_point[1])],
+            "area": list(action.payload.get("area", [])),
+            "tolerance": int(action.payload.get("tolerance", 15)),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._append_color_trigger_log(payload)
+        if self._color_match_callback is not None:
+            self._color_match_callback(payload)
+
+    def _append_color_trigger_log(self, payload: dict) -> None:
+        logs_dir = Path(__file__).resolve().parent.parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_file = logs_dir / "color_trigger.log"
+
+        rgb = payload.get("rgb", [0, 0, 0])
+        point = payload.get("point", [0, 0])
+        area = payload.get("area", [])
+        timestamp = payload.get("timestamp", "")
+        tolerance = payload.get("tolerance", 0)
+
+        line = (
+            f"{timestamp} | RGB=({rgb[0]}, {rgb[1]}, {rgb[2]}) | "
+            f"point=({point[0]}, {point[1]}) | area={area} | tolerance={tolerance}\n"
+        )
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
     def close(self) -> None:
+        self._release_all_pressed_keys()
         self._keyboard.close()

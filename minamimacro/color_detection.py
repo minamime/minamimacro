@@ -33,8 +33,16 @@ def area_contains_any_target_color(
     target_colors: list[tuple[int, int, int]],
     tolerance: int,
 ) -> bool:
+    return find_first_target_color_match(area, target_colors, tolerance) is not None
+
+
+def find_first_target_color_match(
+    area: tuple[int, int, int, int],
+    target_colors: list[tuple[int, int, int]],
+    tolerance: int,
+) -> tuple[tuple[int, int, int], tuple[int, int]] | None:
     if not target_colors:
-        return False
+        return None
 
     x1, y1, x2, y2 = area
     width = max(1, x2 - x1)
@@ -46,8 +54,10 @@ def area_contains_any_target_color(
     try:
         with mss() as screen:
             shot = screen.grab({"left": x1, "top": y1, "width": width, "height": height})
-        if _matches_bgra_pixels(shot.bgra, target_colors, tolerance):
-            return True
+        match = _find_match_in_bgra(shot.bgra, width, target_colors, tolerance)
+        if match is not None:
+            color, (local_x, local_y) = match
+            return color, (x1 + local_x, y1 + local_y)
     except Exception as exc:
         capture_errors.append(f"mss-region={exc}")
 
@@ -59,10 +69,12 @@ def area_contains_any_target_color(
     rgb_image = full_image.convert("RGB")
     for candidate in _scaled_area_candidates((x1, y1, x2, y2), rgb_image.size):
         cropped = rgb_image.crop(candidate)
-        if _matches_rgb_image(cropped, target_colors, tolerance):
-            return True
+        match = _find_match_in_rgb_image(cropped, target_colors, tolerance)
+        if match is not None:
+            color, (local_x, local_y) = match
+            return color, (candidate[0] + local_x, candidate[1] + local_y)
 
-    return False
+    return None
 
 
 def _capture_full_screen_image(capture_errors: list[str]) -> Image.Image | None:
@@ -126,20 +138,40 @@ def _scaled_area_candidates(area: tuple[int, int, int, int], image_size: tuple[i
 
 
 def _matches_bgra_pixels(pixels: bytes, target_colors: list[tuple[int, int, int]], tolerance: int) -> bool:
-    step = 4
-    for idx in range(0, len(pixels), step):
+    return _find_match_in_bgra(pixels, None, target_colors, tolerance) is not None
+
+
+def _matches_rgb_image(image: Image.Image, target_colors: list[tuple[int, int, int]], tolerance: int) -> bool:
+    return _find_match_in_rgb_image(image, target_colors, tolerance) is not None
+
+
+def _find_match_in_bgra(
+    pixels: bytes,
+    width: int | None,
+    target_colors: list[tuple[int, int, int]],
+    tolerance: int,
+) -> tuple[tuple[int, int, int], tuple[int, int]] | None:
+    for idx in range(0, len(pixels), 4):
         b = pixels[idx]
         g = pixels[idx + 1]
         r = pixels[idx + 2]
         for tr, tg, tb in target_colors:
             if abs(r - tr) <= tolerance and abs(g - tg) <= tolerance and abs(b - tb) <= tolerance:
-                return True
-    return False
+                if width is None or width <= 0:
+                    return (r, g, b), (0, 0)
+                pixel_index = idx // 4
+                return (r, g, b), (pixel_index % width, pixel_index // width)
+    return None
 
 
-def _matches_rgb_image(image: Image.Image, target_colors: list[tuple[int, int, int]], tolerance: int) -> bool:
-    for r, g, b in image.getdata():
+def _find_match_in_rgb_image(
+    image: Image.Image,
+    target_colors: list[tuple[int, int, int]],
+    tolerance: int,
+) -> tuple[tuple[int, int, int], tuple[int, int]] | None:
+    width, _ = image.size
+    for index, (r, g, b) in enumerate(image.getdata()):
         for tr, tg, tb in target_colors:
             if abs(r - tr) <= tolerance and abs(g - tg) <= tolerance and abs(b - tb) <= tolerance:
-                return True
-    return False
+                return (r, g, b), (index % width, index // width)
+    return None

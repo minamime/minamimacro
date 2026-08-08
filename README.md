@@ -22,6 +22,8 @@ A simple Python macro GUI client with recording and playback for keyboard/mouse 
 - Add sleep blocks in milliseconds to pause queue execution
 - Drag-reorder queue items using the 8-dot handle at the start of each row
 - Relative random action-delay variation in milliseconds
+- Keyboard backend selector with typing test
+- Red overlay + RGB logging on color trigger match
 
 ## Project Layout
 
@@ -64,6 +66,15 @@ python run.py
 
 On GNOME Wayland, synthetic keyboard injection is restricted. The app now auto-tries a uinput backend for key playback.
 
+The app now prefers `ydotool` on Wayland (when available), then falls back to uinput.
+
+Install and start ydotool on Debian:
+
+```bash
+sudo apt install ydotool
+sudo systemctl enable --now ydotool
+```
+
 If keystrokes still do not execute, ensure uinput is enabled and your user can access it:
 
 ```bash
@@ -91,6 +102,7 @@ If that still fails, it also tries `gnome-screenshot` as a final fallback (insta
 	 - Pixel variation X/Y for randomized target clicks
 	 - Loop delay
 6. Set your macro and recording global hotkeys (example: `<ctrl>+<alt>+m` and `<ctrl>+<alt>+r`) and click Apply Hotkeys.
+6. Choose keyboard backend (`auto`, `ydotool`, `uinput`, `pynput`) and use Test Typing to validate key output.
 7. Use Save Config / Load Config for local presets in the configs folder.
 8. Use Export Config / Import Config to move bundled config folders between folders or machines.
 9. Start the macro from the button or by using your global hotkey.
@@ -103,11 +115,13 @@ If that still fails, it also tries `gnome-screenshot` as a final fallback (insta
 	 - Tick on/off the loaded color squares to choose which colors are used for recognition.
 	 - Set Color tolerance and choose whether to delay later inputs until color match.
 	 - Click Add Color Trigger To Queue to insert this condition in the macro queue.
+	 - On match, a short red overlay appears at the matched point and a log entry is written.
 
 ## Config Files
 
 - Local configs are stored in the configs folder.
 - Each config is stored as a bundle folder containing config.json and optional reference image.
 - The configs folder is ignored by git except for configs/.gitkeep.
+- Color-trigger matches are logged in logs/color_trigger.log.
 
 All code licensed under MIT.

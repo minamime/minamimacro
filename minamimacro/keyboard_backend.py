@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 
 from evdev import UInput, ecodes
@@ -123,7 +125,11 @@ class UInputKeyboardBackend(KeyboardBackendBase):
     name = "uinput"
 
     def __init__(self) -> None:
-        self._uinput = UInput(name="minamimacro-uinput")
+        key_codes = sorted(k for k in ecodes.keys.keys() if isinstance(k, int) and 0 <= k <= 0x2FF)
+        capabilities = {
+            ecodes.EV_KEY: key_codes,
+        }
+        self._uinput = UInput(events=capabilities, name="minamimacro-uinput")
 
     def press_serialized(self, value: str) -> None:
         code = _serialized_to_evdev_code(value)
@@ -137,6 +143,33 @@ class UInputKeyboardBackend(KeyboardBackendBase):
 
     def close(self) -> None:
         self._uinput.close()
+
+
+class YdotoolKeyboardBackend(KeyboardBackendBase):
+    name = "ydotool"
+
+    def __init__(self) -> None:
+        if shutil.which("ydotool") is None:
+            raise RuntimeError("ydotool binary not found")
+
+    def press_serialized(self, value: str) -> None:
+        code = _serialized_to_evdev_code(value)
+        self._run_key(code, 1)
+
+    def release_serialized(self, value: str) -> None:
+        code = _serialized_to_evdev_code(value)
+        self._run_key(code, 0)
+
+    def _run_key(self, code: int, state: int) -> None:
+        result = subprocess.run(
+            ["ydotool", "key", f"{code}:{state}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"ydotool failed: {stderr}")
 
 
 def _serialized_to_evdev_code(value: str) -> int:
@@ -157,7 +190,12 @@ def _serialized_to_evdev_code(value: str) -> int:
 
     if value.startswith("vk:"):
         vk = int(value.split(":", 1)[1])
-        if 1 <= vk <= 767:
+        # On Linux/XKB, many reported virtual keycodes are evdev codes + 8.
+        # Try that mapping first, then fall back to direct if already evdev-like.
+        vk_minus_8 = vk - 8
+        if vk_minus_8 in ecodes.keys:
+            return vk_minus_8
+        if vk in ecodes.keys:
             return vk
         raise ValueError(f"Unsupported vk key: {vk}")
 
@@ -169,14 +207,29 @@ class AutoKeyboardBackend:
     backend: KeyboardBackendBase
     warning: str | None = None
 
-    def __init__(self) -> None:
+    def __init__(self, preferred_backend: str = "auto") -> None:
         session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
         wayland_display = os.environ.get("WAYLAND_DISPLAY")
 
+        if preferred_backend != "auto":
+            self.backend = self._create_backend(preferred_backend)
+            self.warning = None
+            return
+
         if session_type == "wayland" or wayland_display:
             try:
-                self.backend = UInputKeyboardBackend()
+                self.backend = YdotoolKeyboardBackend()
                 self.warning = None
+                return
+            except Exception as exc:
+                ydotool_exc = exc
+
+            try:
+                self.backend = UInputKeyboardBackend()
+                if "ydotool_exc" in locals():
+                    self.warning = f"Wayland keyboard backend: uinput (ydotool unavailable: {ydotool_exc})"
+                else:
+                    self.warning = None
                 return
             except Exception as exc:
                 self.backend = PynputKeyboardBackend()
@@ -188,6 +241,20 @@ class AutoKeyboardBackend:
 
         self.backend = PynputKeyboardBackend()
         self.warning = None
+
+    def _create_backend(self, name: str) -> KeyboardBackendBase:
+        normalized = name.strip().lower()
+        if normalized == "ydotool":
+            return YdotoolKeyboardBackend()
+        if normalized == "uinput":
+            return UInputKeyboardBackend()
+        if normalized == "pynput":
+            return PynputKeyboardBackend()
+        raise ValueError(f"Unsupported backend: {name}")
+
+    @staticmethod
+    def selectable_backends() -> list[str]:
+        return ["auto", "ydotool", "uinput", "pynput"]
 
     @property
     def name(self) -> str:

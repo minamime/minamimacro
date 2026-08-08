@@ -16,6 +16,7 @@ from .config_store import (
 )
 from .engine import MacroEngine
 from .hotkeys import GlobalHotkey
+from .keyboard_backend import AutoKeyboardBackend
 from .models import ActionType, InputAction, MacroSettings
 from .recorder import InputRecorder, capture_left_clicks
 
@@ -45,6 +46,7 @@ class MacroApp(tk.Tk):
 
         self._status_queue: queue.Queue[str] = queue.Queue()
         self.engine.set_status_callback(self._queue_status)
+        self.engine.set_color_match_callback(self._handle_color_trigger_match)
 
         self._capture_listener: Any = None
         self._corner_capture_listener: Any = None
@@ -60,6 +62,7 @@ class MacroApp(tk.Tk):
 
         self.hotkey_var = tk.StringVar(value="<ctrl>+<alt>+m")
         self.record_hotkey_var = tk.StringVar(value="<ctrl>+<alt>+r")
+        self.keyboard_backend_var = tk.StringVar(value=self.engine.keyboard_backend_mode)
         self.cursor_speed_var = tk.StringVar(value="1200")
         self.cursor_speed_variation_var = tk.StringVar(value="0")
         self.action_delay_variation_ms_var = tk.StringVar(value="0")
@@ -207,6 +210,21 @@ class MacroApp(tk.Tk):
         ttk.Label(hotkey_frame, text="Recording start/stop").grid(row=1, column=0, padx=6, pady=6, sticky=tk.W)
         ttk.Entry(hotkey_frame, textvariable=self.record_hotkey_var, width=24).grid(
             row=1, column=1, padx=6, pady=6, sticky=tk.W
+        )
+        ttk.Label(hotkey_frame, text="Keyboard backend").grid(row=2, column=0, padx=6, pady=6, sticky=tk.W)
+        backend_combo = ttk.Combobox(
+            hotkey_frame,
+            textvariable=self.keyboard_backend_var,
+            values=AutoKeyboardBackend.selectable_backends(),
+            width=22,
+            state="readonly",
+        )
+        backend_combo.grid(row=2, column=1, padx=6, pady=6, sticky=tk.W)
+        ttk.Button(hotkey_frame, text="Apply Backend", command=self._apply_keyboard_backend).grid(
+            row=2, column=2, padx=6, pady=6, sticky=tk.W
+        )
+        ttk.Button(hotkey_frame, text="Test Typing", command=self._test_typing_output).grid(
+            row=2, column=3, padx=6, pady=6, sticky=tk.W
         )
         ttk.Button(hotkey_frame, text="Apply Hotkeys", command=self._apply_hotkeys).grid(
             row=0, column=2, rowspan=2, padx=6, pady=6, sticky=tk.NS
@@ -539,6 +557,31 @@ class MacroApp(tk.Tk):
     def _queue_status(self, message: str) -> None:
         self._status_queue.put(message)
 
+    def _handle_color_trigger_match(self, payload: dict) -> None:
+        self.after(0, lambda: self._show_color_trigger_overlay(payload))
+
+    def _show_color_trigger_overlay(self, payload: dict) -> None:
+        point = payload.get("point", [0, 0])
+        rgb = payload.get("rgb", [0, 0, 0])
+        if not isinstance(point, list) or len(point) < 2:
+            return
+
+        x = int(point[0])
+        y = int(point[1])
+
+        overlay = tk.Toplevel(self)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.attributes("-alpha", 0.45)
+        size = 28
+        overlay.geometry(f"{size}x{size}+{x - size // 2}+{y - size // 2}")
+
+        marker = tk.Frame(overlay, bg="#ff2d2d", highlightthickness=1, highlightbackground="#ffffff")
+        marker.pack(fill=tk.BOTH, expand=True)
+
+        overlay.after(450, overlay.destroy)
+        self.status_var.set(f"Color trigger hit RGB({rgb[0]}, {rgb[1]}, {rgb[2]}) at ({x}, {y})")
+
     def _update_gui_capture_state(self) -> None:
         self.update_idletasks()
         control_regions: list[tuple[int, int, int, int]] = []
@@ -806,6 +849,7 @@ class MacroApp(tk.Tk):
         settings = self._read_settings()
         payload = build_config_payload(self.recorder.actions, settings, self.hotkey_var.get().strip())
         payload["record_hotkey"] = self.record_hotkey_var.get().strip()
+        payload["keyboard_backend"] = self.keyboard_backend_var.get().strip()
         payload["color_config"] = {
             "corner_1": list(self.color_corner_1) if self.color_corner_1 is not None else None,
             "corner_2": list(self.color_corner_2) if self.color_corner_2 is not None else None,
@@ -853,6 +897,10 @@ class MacroApp(tk.Tk):
         if record_hotkey:
             self.record_hotkey_var.set(record_hotkey)
             self.record_hotkey.update_hotkey(record_hotkey, self._handle_record_hotkey_toggle)
+
+        keyboard_backend = str(payload.get("keyboard_backend", "auto")).strip() or "auto"
+        self.keyboard_backend_var.set(keyboard_backend)
+        self._apply_keyboard_backend(show_error=False)
 
         color_config = payload.get("color_config", {}) if isinstance(payload.get("color_config", {}), dict) else {}
         corner_1 = color_config.get("corner_1")
@@ -1017,6 +1065,32 @@ class MacroApp(tk.Tk):
             return
 
         self.status_var.set(f"Hotkeys set: macro={macro_hotkey}, recording={record_hotkey}")
+
+    def _apply_keyboard_backend(self, show_error: bool = True) -> None:
+        mode = self.keyboard_backend_var.get().strip() or "auto"
+        ok, message = self.engine.set_keyboard_backend(mode)
+        if ok:
+            self.keyboard_backend_var.set(self.engine.keyboard_backend_mode)
+            self.status_var.set(message)
+            return
+        if show_error:
+            messagebox.showerror("Keyboard backend", message)
+
+    def _test_typing_output(self) -> None:
+        text = simpledialog.askstring(
+            "Typing test",
+            "Text to type into focused window:",
+            initialvalue="abc123",
+            parent=self,
+        )
+        if text is None:
+            return
+
+        ok, message = self.engine.test_type_text(text)
+        if ok:
+            self.status_var.set(message)
+            return
+        messagebox.showerror("Typing test failed", message)
 
     def _on_close(self) -> None:
         self._stop_corner_capture()
