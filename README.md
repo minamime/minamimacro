@@ -62,6 +62,13 @@ pip install -r requirements.txt
 python run.py
 ```
 
+## Windows Note
+
+The app now runs on Windows without requiring Linux-only dependencies.
+
+- On Windows, use keyboard backend `pynput` (or `auto`, which should select a compatible backend).
+- Linux-specific backends (`uinput`, `ydotool`) are only available on Linux/Wayland environments.
+
 ## Wayland Note (GNOME Debian)
 
 On GNOME Wayland, synthetic keyboard injection is restricted. The app now auto-tries a uinput backend for key playback.
