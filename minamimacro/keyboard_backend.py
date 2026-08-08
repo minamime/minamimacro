@@ -3,72 +3,86 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 
-from evdev import UInput, ecodes
 from pynput.keyboard import Controller as KeyboardController
 
 from .input_utils import deserialize_key
 
+IS_LINUX = sys.platform.startswith("linux")
 
-SPECIAL_KEY_MAP = {
-    "alt": ecodes.KEY_LEFTALT,
-    "alt_l": ecodes.KEY_LEFTALT,
-    "alt_r": ecodes.KEY_RIGHTALT,
-    "ctrl": ecodes.KEY_LEFTCTRL,
-    "ctrl_l": ecodes.KEY_LEFTCTRL,
-    "ctrl_r": ecodes.KEY_RIGHTCTRL,
-    "shift": ecodes.KEY_LEFTSHIFT,
-    "shift_l": ecodes.KEY_LEFTSHIFT,
-    "shift_r": ecodes.KEY_RIGHTSHIFT,
-    "cmd": ecodes.KEY_LEFTMETA,
-    "cmd_l": ecodes.KEY_LEFTMETA,
-    "cmd_r": ecodes.KEY_RIGHTMETA,
-    "super": ecodes.KEY_LEFTMETA,
-    "space": ecodes.KEY_SPACE,
-    "enter": ecodes.KEY_ENTER,
-    "tab": ecodes.KEY_TAB,
-    "backspace": ecodes.KEY_BACKSPACE,
-    "delete": ecodes.KEY_DELETE,
-    "esc": ecodes.KEY_ESC,
-    "caps_lock": ecodes.KEY_CAPSLOCK,
-    "up": ecodes.KEY_UP,
-    "down": ecodes.KEY_DOWN,
-    "left": ecodes.KEY_LEFT,
-    "right": ecodes.KEY_RIGHT,
-    "home": ecodes.KEY_HOME,
-    "end": ecodes.KEY_END,
-    "page_up": ecodes.KEY_PAGEUP,
-    "page_down": ecodes.KEY_PAGEDOWN,
-    "insert": ecodes.KEY_INSERT,
-    "media_volume_up": ecodes.KEY_VOLUMEUP,
-    "media_volume_down": ecodes.KEY_VOLUMEDOWN,
-    "media_volume_mute": ecodes.KEY_MUTE,
-}
+try:
+    from evdev import UInput, ecodes
 
-for idx in range(1, 13):
-    SPECIAL_KEY_MAP[f"f{idx}"] = getattr(ecodes, f"KEY_F{idx}")
+    HAS_EVDEV = True
+except Exception:
+    UInput = None
+    ecodes = None
+    HAS_EVDEV = False
 
 
-CHAR_KEY_MAP = {
-    **{chr(ord("a") + i): getattr(ecodes, f"KEY_{chr(ord('A') + i)}") for i in range(26)},
-    **{str(i): getattr(ecodes, f"KEY_{i}") for i in range(10)},
-    " ": ecodes.KEY_SPACE,
-    "-": ecodes.KEY_MINUS,
-    "=": ecodes.KEY_EQUAL,
-    "[": ecodes.KEY_LEFTBRACE,
-    "]": ecodes.KEY_RIGHTBRACE,
-    "\\": ecodes.KEY_BACKSLASH,
-    ";": ecodes.KEY_SEMICOLON,
-    "'": ecodes.KEY_APOSTROPHE,
-    "`": ecodes.KEY_GRAVE,
-    ",": ecodes.KEY_COMMA,
-    ".": ecodes.KEY_DOT,
-    "/": ecodes.KEY_SLASH,
-    "\t": ecodes.KEY_TAB,
-    "\n": ecodes.KEY_ENTER,
-    "\r": ecodes.KEY_ENTER,
-}
+if HAS_EVDEV:
+    SPECIAL_KEY_MAP = {
+        "alt": ecodes.KEY_LEFTALT,
+        "alt_l": ecodes.KEY_LEFTALT,
+        "alt_r": ecodes.KEY_RIGHTALT,
+        "ctrl": ecodes.KEY_LEFTCTRL,
+        "ctrl_l": ecodes.KEY_LEFTCTRL,
+        "ctrl_r": ecodes.KEY_RIGHTCTRL,
+        "shift": ecodes.KEY_LEFTSHIFT,
+        "shift_l": ecodes.KEY_LEFTSHIFT,
+        "shift_r": ecodes.KEY_RIGHTSHIFT,
+        "cmd": ecodes.KEY_LEFTMETA,
+        "cmd_l": ecodes.KEY_LEFTMETA,
+        "cmd_r": ecodes.KEY_RIGHTMETA,
+        "super": ecodes.KEY_LEFTMETA,
+        "space": ecodes.KEY_SPACE,
+        "enter": ecodes.KEY_ENTER,
+        "tab": ecodes.KEY_TAB,
+        "backspace": ecodes.KEY_BACKSPACE,
+        "delete": ecodes.KEY_DELETE,
+        "esc": ecodes.KEY_ESC,
+        "caps_lock": ecodes.KEY_CAPSLOCK,
+        "up": ecodes.KEY_UP,
+        "down": ecodes.KEY_DOWN,
+        "left": ecodes.KEY_LEFT,
+        "right": ecodes.KEY_RIGHT,
+        "home": ecodes.KEY_HOME,
+        "end": ecodes.KEY_END,
+        "page_up": ecodes.KEY_PAGEUP,
+        "page_down": ecodes.KEY_PAGEDOWN,
+        "insert": ecodes.KEY_INSERT,
+        "media_volume_up": ecodes.KEY_VOLUMEUP,
+        "media_volume_down": ecodes.KEY_VOLUMEDOWN,
+        "media_volume_mute": ecodes.KEY_MUTE,
+    }
+
+    for idx in range(1, 13):
+        SPECIAL_KEY_MAP[f"f{idx}"] = getattr(ecodes, f"KEY_F{idx}")
+
+    CHAR_KEY_MAP = {
+        **{chr(ord("a") + i): getattr(ecodes, f"KEY_{chr(ord('A') + i)}") for i in range(26)},
+        **{str(i): getattr(ecodes, f"KEY_{i}") for i in range(10)},
+        " ": ecodes.KEY_SPACE,
+        "-": ecodes.KEY_MINUS,
+        "=": ecodes.KEY_EQUAL,
+        "[": ecodes.KEY_LEFTBRACE,
+        "]": ecodes.KEY_RIGHTBRACE,
+        "\\": ecodes.KEY_BACKSLASH,
+        ";": ecodes.KEY_SEMICOLON,
+        "'": ecodes.KEY_APOSTROPHE,
+        "`": ecodes.KEY_GRAVE,
+        ",": ecodes.KEY_COMMA,
+        ".": ecodes.KEY_DOT,
+        "/": ecodes.KEY_SLASH,
+        "\t": ecodes.KEY_TAB,
+        "\n": ecodes.KEY_ENTER,
+        "\r": ecodes.KEY_ENTER,
+    }
+else:
+    SPECIAL_KEY_MAP = {}
+    CHAR_KEY_MAP = {}
 
 SHIFTED_TO_BASE_CHAR = {
     "!": "1",
@@ -125,6 +139,8 @@ class UInputKeyboardBackend(KeyboardBackendBase):
     name = "uinput"
 
     def __init__(self) -> None:
+        if not HAS_EVDEV or UInput is None or ecodes is None:
+            raise RuntimeError("evdev is not available on this platform")
         key_codes = sorted(k for k in ecodes.keys.keys() if isinstance(k, int) and 0 <= k <= 0x2FF)
         capabilities = {
             ecodes.EV_KEY: key_codes,
@@ -173,6 +189,9 @@ class YdotoolKeyboardBackend(KeyboardBackendBase):
 
 
 def _serialized_to_evdev_code(value: str) -> int:
+    if not HAS_EVDEV or ecodes is None:
+        raise RuntimeError("evdev key mapping is unavailable on this platform")
+
     if value.startswith("special:"):
         raw = value.split(":", 1)[1]
         key_name = raw.replace("Key.", "")
@@ -245,8 +264,12 @@ class AutoKeyboardBackend:
     def _create_backend(self, name: str) -> KeyboardBackendBase:
         normalized = name.strip().lower()
         if normalized == "ydotool":
+            if not IS_LINUX:
+                raise ValueError("ydotool is only available on Linux")
             return YdotoolKeyboardBackend()
         if normalized == "uinput":
+            if not IS_LINUX:
+                raise ValueError("uinput is only available on Linux")
             return UInputKeyboardBackend()
         if normalized == "pynput":
             return PynputKeyboardBackend()
@@ -254,7 +277,9 @@ class AutoKeyboardBackend:
 
     @staticmethod
     def selectable_backends() -> list[str]:
-        return ["auto", "ydotool", "uinput", "pynput"]
+        if IS_LINUX:
+            return ["auto", "ydotool", "uinput", "pynput"]
+        return ["auto", "pynput"]
 
     @property
     def name(self) -> str:
