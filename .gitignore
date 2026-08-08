@@ -1,0 +1,6 @@
+configs/*
+!configs/.gitkeep
+__pycache__/
+*.pyc
+logs/*
+!logs/.gitkeep
